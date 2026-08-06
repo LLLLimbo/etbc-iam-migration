@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -96,6 +97,7 @@ def test_resume_skips_success_and_retries_process_failure(
     assert entities[("STAFF", "102")]["attemptCount"] == 2
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are unavailable on Windows")
 def test_state_permissions_are_restricted(tmp_path: Path) -> None:
     state_dir = tmp_path / "private-state"
     store = StateStore(state_dir)

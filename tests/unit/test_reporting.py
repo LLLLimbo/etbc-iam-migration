@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+
+import pytest
 
 from etbc_migration.payloads import build_shards
 from etbc_migration.reporting import build_report, write_reports
@@ -49,6 +52,7 @@ def test_report_contains_required_ledger_and_runtime_fields(
     assert report["calls"][0]["durationMs"] == 17
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are unavailable on Windows")
 def test_machine_and_human_reports_are_private(tmp_path: Path, source_snapshot: dict, metadata: dict) -> None:
     store = StateStore(tmp_path / "state")
     payload = build_shards(source_snapshot, metadata, 150)[0]
