@@ -288,17 +288,32 @@ class EtbcReader:
         if not legacy_tenant_id or not legacy_tenant_id.strip():
             raise ConfigError("LEGACY_TENANT_ID_REQUIRED")
         _zone(source_timezone)
+        LOGGER.info(
+            "ETBC snapshot read started: host=%s port=%s schema=%s legacyTenantId=%s sourceTimezone=%s",
+            getattr(self._config, "host", "unknown"),
+            getattr(self._config, "port", "unknown"),
+            getattr(self._config, "schema", "unknown"),
+            legacy_tenant_id,
+            source_timezone,
+        )
         connection = self._connect()
+        stage = "start_transaction"
         try:
             with connection.cursor() as cursor:
                 cursor.execute("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ")
                 cursor.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+
+                stage = "inspect_optional_columns"
                 cursor.execute(OPTIONAL_SOURCE_COLUMNS_SELECT)
                 available_columns = _available_optional_columns(cursor.fetchall())
+
+                stage = "read_tenant"
                 cursor.execute(_tenant_select(available_columns), (legacy_tenant_id,))
                 tenant_rows = cursor.fetchall()
                 if len(tenant_rows) != 1:
                     raise LocalValidationError("TENANT_NOT_UNIQUE")
+
+                stage = "normalize_tenant"
                 tenant = normalize_row(
                     tenant_rows[0],
                     source_timezone,
@@ -309,7 +324,10 @@ class EtbcReader:
                     raise LocalValidationError("TENANT_OWNERSHIP_INVALID")
                 initial_prefix = ownership[:4]
 
+                stage = "read_organizations"
                 cursor.execute(_organization_select(available_columns), (initial_prefix,))
+
+                stage = "normalize_organizations"
                 organizations = [
                     normalize_row(
                         row,
@@ -329,9 +347,12 @@ class EtbcReader:
                 if prefix != initial_prefix:
                     raise LocalValidationError("TENANT_ROOT_OWNERSHIP_MISMATCH")
 
+                stage = "read_staff"
                 cursor.execute(STAFF_SELECT, (prefix,))
                 staff_rows = cursor.fetchall()
                 staff: list[dict[str, Any]] = []
+
+                stage = "normalize_staff"
                 for raw_row in staff_rows:
                     account_locked = account_locked_epoch_millis(raw_row.get("accountLockedTime"), source_timezone)
                     row = dict(raw_row)
@@ -348,10 +369,20 @@ class EtbcReader:
                 tenant["rootOrgId"] = roots[0]["id"]
                 for organization in organizations:
                     organization["tenantId"] = tenant["tenantId"]
+
+                stage = "capture_timestamp"
                 cursor.execute("SELECT UTC_TIMESTAMP(6) AS `capturedAt`")
                 captured = cursor.fetchone()["capturedAt"]
             connection.rollback()
         except (pymysql.MySQLError, ValueError) as error:
+            error_code = error.args[0] if isinstance(error, pymysql.MySQLError) and error.args else "n/a"
+            LOGGER.error(
+                "ETBC snapshot read failed: stage=%s errorType=%s errorCode=%s detail=%s",
+                stage,
+                type(error).__name__,
+                error_code,
+                error,
+            )
             connection.rollback()
             raise LocalValidationError("ETBC_SNAPSHOT_READ_FAILED") from error
         finally:

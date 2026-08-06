@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 
+import pymysql
 import pytest
 
 from etbc_migration.source import (
@@ -147,6 +149,13 @@ class SnapshotConnection:
         self.closed = True
 
 
+class FailingOrganizationCursor(SnapshotCursor):
+    def execute(self, statement: str, parameters: object = None) -> None:
+        if "FROM `sys_orgnization`" in statement:
+            raise pymysql.ProgrammingError(1054, "Unknown column 'obsolete' in 'field list'")
+        super().execute(statement, parameters)
+
+
 def test_reader_relies_on_read_only_transaction_instead_of_account_grant_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -183,3 +192,23 @@ def test_reader_supports_legacy_schema_without_optional_audit_and_deleted_column
     assert "FALSE AS `deleted`" in organization_query
     assert "COALESCE(`deleted`, 0)" not in organization_query
     assert snapshot["organizations"][0]["deleted"] is False
+
+
+def test_reader_logs_database_error_context_when_snapshot_query_fails(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    connection = SnapshotConnection(FailingOrganizationCursor())
+    reader = EtbcReader(object())
+    monkeypatch.setattr(reader, "_connect", lambda: connection)
+
+    with caplog.at_level(logging.ERROR, logger="etbc_migration.source"):
+        with pytest.raises(LocalValidationError, match="ETBC_SNAPSHOT_READ_FAILED"):
+            reader.read_snapshot("tenant-001", "Asia/Shanghai")
+
+    failure = next(record for record in caplog.records if "ETBC snapshot read failed" in record.message)
+    assert "stage=read_organizations" in failure.message
+    assert "errorType=ProgrammingError" in failure.message
+    assert "errorCode=1054" in failure.message
+    assert "Unknown column 'obsolete' in 'field list'" in failure.message
+    assert connection.rolled_back is True
+    assert connection.closed is True

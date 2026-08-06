@@ -90,6 +90,21 @@ $env:ETBC_PASSWORD = '<由秘密管理系统注入>'
   --source-timezone Asia/Shanghai
 ```
 
+若出现 `ERROR ETBC_SNAPSHOT_READ_FAILED`，把标准错误一并保存：
+
+```powershell
+.\etbc-iam-migrate.exe `
+  --config C:\migration\config.toml `
+  preflight `
+  --legacy-tenant-id '<legacy-tenant-id>' `
+  --enabled-modules TENANT,ORGANIZATION,STAFF `
+  --source-timezone Asia/Shanghai 2>&1 |
+  Tee-Object -FilePath C:\migration\etbc-diagnostic.log
+```
+
+失败日志会包含 `stage`、异常类型、MySQL 错误码和底层错误详情。例如缺少字段时可据此定位到
+`read_tenant`、`read_organizations` 或 `read_staff` 阶段；日志不会输出数据库密码。
+
 下面的生产示例假定已由安全的运行平台注入 `ETBC_PASSWORD`，并设置这些非秘密运行变量：
 
 ```bash
