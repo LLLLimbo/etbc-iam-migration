@@ -69,7 +69,7 @@ docker build --tag etbc-iam-migration:1.0.0 .
 ### Windows 单文件程序
 
 仓库的 `Build Windows executable` GitHub Actions 工作流会在 Windows Server 2022 x64 Runner 上
-使用 Python 3.12.11 和锁定的 PyInstaller 依赖运行单元测试，然后生成：
+使用 Python 3.12.10 和锁定的 PyInstaller 依赖运行单元测试，然后生成：
 
 - `etbc-iam-migrate.exe`
 - `etbc-iam-migrate.exe.sha256`

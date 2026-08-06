@@ -12,7 +12,7 @@ def test_windows_build_workflow_publishes_single_file_executable() -> None:
 
     assert "workflow_dispatch:" in workflow
     assert "runs-on: windows-2022" in workflow
-    assert "python-version: \"3.12.11\"" in workflow
+    assert "python-version: \"3.12.10\"" in workflow
     assert "python -m PyInstaller --clean --noconfirm etbc-iam-migration.spec" in workflow
     assert "dist/etbc-iam-migrate.exe" in workflow
     assert "actions/upload-artifact@v7" in workflow
