@@ -19,6 +19,38 @@ from etbc_migration.source import (
 from etbc_migration.errors import LocalValidationError
 
 
+OPTIONAL_STAFF_COLUMNS = {
+    "systemCode": "systemCode",
+    "csremail": "email",
+    "gender_id": "genderId",
+    "mobilePhone": "mobilePhone",
+    "headImg": "headImg",
+    "identyCard": "idCard",
+    "jobNumber": "jobNumber",
+    "jobTitle": "jobTitle",
+    "birthday": "birthday",
+    "commonPlace": "commonPlace",
+    "accountOrgNo": "accountOrgNo",
+    "agentNo": "agentNo",
+    "affiliateSubAccount_id": "affiliateSubAccountId",
+    "affiliateAccountAppQueue_id": "affiliateAccountAppQueueId",
+    "affiliateAccountAppQueueNo": "affiliateAccountAppQueueNo",
+    "wxUserId": "wxUserId",
+    "nailUserId": "nailUserId",
+    "workPhone": "workPhone",
+    "loginOrNot": "loginOrNot",
+    "loginRetryTimes": "loginRetryTimes",
+    "accountLockedTime": "accountLockedTime",
+    "createDate": "createDate",
+    "lastUpdateDate": "lastUpdateDate",
+}
+ALL_OPTIONAL_COLUMNS = {
+    ("biz_participant", "iam_lessee_id"),
+    ("sys_orgnization", "deleted"),
+    ("sys_orgnization", "userId"),
+} | {("sys_user", column) for column in OPTIONAL_STAFF_COLUMNS}
+
+
 def test_queries_use_exact_etbc_columns_and_dto_aliases_without_credentials() -> None:
     assert "`tId` AS `tenantId`" in TENANT_SELECT
     assert "`createDate` AS `createDate`" in TENANT_SELECT
@@ -84,15 +116,7 @@ class SnapshotCursor:
     def __init__(self, optional_columns: set[tuple[str, str]] | None = None) -> None:
         self.statements: list[str] = []
         self._statement = ""
-        self._optional_columns = (
-            {
-                ("biz_participant", "iam_lessee_id"),
-                ("sys_orgnization", "deleted"),
-                ("sys_orgnization", "userId"),
-            }
-            if optional_columns is None
-            else optional_columns
-        )
+        self._optional_columns = ALL_OPTIONAL_COLUMNS if optional_columns is None else optional_columns
 
     def __enter__(self) -> SnapshotCursor:
         return self
@@ -105,9 +129,18 @@ class SnapshotCursor:
             ("biz_participant", "iam_lessee_id"): "`iam_lessee_id` AS `iamLesseeId`",
             ("sys_orgnization", "deleted"): "`deleted` AS `deleted`",
             ("sys_orgnization", "userId"): "`userId` AS `userId`",
+            **{
+                ("sys_user", column): f"`{column}` AS `{alias}`"
+                for column, alias in OPTIONAL_STAFF_COLUMNS.items()
+            },
         }
         for column, sql_fragment in missing_columns.items():
-            if column not in self._optional_columns and sql_fragment in statement:
+            table_name, _ = column
+            if (
+                f"FROM `{table_name}`" in statement
+                and column not in self._optional_columns
+                and sql_fragment in statement
+            ):
                 raise AssertionError(f"query referenced unavailable column: {column}")
         self._statement = statement
         self.statements.append(statement)
@@ -175,7 +208,7 @@ def test_reader_relies_on_read_only_transaction_instead_of_account_grant_gate(
     assert connection.closed is True
 
 
-def test_reader_supports_legacy_schema_without_optional_audit_and_deleted_columns(
+def test_reader_supports_legacy_schema_without_optional_columns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cursor = SnapshotCursor(optional_columns=set())
@@ -187,11 +220,42 @@ def test_reader_supports_legacy_schema_without_optional_audit_and_deleted_column
 
     tenant_query = next(statement for statement in cursor.statements if "FROM `biz_participant`" in statement)
     organization_query = next(statement for statement in cursor.statements if "FROM `sys_orgnization`" in statement)
+    staff_query = next(statement for statement in cursor.statements if "FROM `sys_user`" in statement)
     assert "NULL AS `iamLesseeId`" in tenant_query
     assert "NULL AS `userId`" in organization_query
     assert "FALSE AS `deleted`" in organization_query
     assert "COALESCE(`deleted`, 0)" not in organization_query
+    assert "NULL AS `email`" in staff_query
+    assert "NULL AS `wxUserId`" in staff_query
+    assert "NULL AS `lastUpdateDate`" in staff_query
+    assert "`id` AS `id`" in staff_query
+    assert "`ownership` AS `ownership`" in staff_query
+    assert "`orgnization_id` AS `orgnizationId`" in staff_query
+    assert "`loginName` AS `loginName`" in staff_query
+    assert "`name` AS `name`" in staff_query
+    assert "`isUserType` AS `isUserType`" in staff_query
+    assert "`status_id` AS `statusId`" in staff_query
     assert snapshot["organizations"][0]["deleted"] is False
+
+
+def test_reader_supports_legacy_staff_without_wx_user_id(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    cursor = SnapshotCursor(
+        optional_columns=ALL_OPTIONAL_COLUMNS - {("sys_user", "wxUserId")}
+    )
+    connection = SnapshotConnection(cursor)
+    reader = EtbcReader(object())
+    monkeypatch.setattr(reader, "_connect", lambda: connection)
+
+    with caplog.at_level(logging.WARNING, logger="etbc_migration.source"):
+        snapshot = reader.read_snapshot("tenant-001", "Asia/Shanghai")
+
+    staff_query = next(statement for statement in cursor.statements if "FROM `sys_user`" in statement)
+    warning = next(record for record in caplog.records if "optional columns unavailable" in record.message)
+    assert "NULL AS `wxUserId`" in staff_query
+    assert "sys_user.wxUserId" in warning.message
+    assert snapshot["staff"] == []
 
 
 def test_reader_logs_database_error_context_when_snapshot_query_fails(

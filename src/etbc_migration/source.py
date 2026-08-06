@@ -116,19 +116,42 @@ SELECT
   `COLUMN_NAME` AS `columnName`
 FROM `INFORMATION_SCHEMA`.`COLUMNS`
 WHERE `TABLE_SCHEMA` = DATABASE()
-  AND (
-    (`TABLE_NAME` = 'biz_participant' AND `COLUMN_NAME` = 'iam_lessee_id')
-    OR (`TABLE_NAME` = 'sys_orgnization' AND `COLUMN_NAME` IN ('deleted', 'userId'))
-  )
+  AND `TABLE_NAME` IN ('biz_participant', 'sys_orgnization', 'sys_user')
 """.strip()
 
 
+_STAFF_OPTIONAL_COLUMN_ALIASES = {
+    "systemCode": "systemCode",
+    "csremail": "email",
+    "gender_id": "genderId",
+    "mobilePhone": "mobilePhone",
+    "headImg": "headImg",
+    "identyCard": "idCard",
+    "jobNumber": "jobNumber",
+    "jobTitle": "jobTitle",
+    "birthday": "birthday",
+    "commonPlace": "commonPlace",
+    "accountOrgNo": "accountOrgNo",
+    "agentNo": "agentNo",
+    "affiliateSubAccount_id": "affiliateSubAccountId",
+    "affiliateAccountAppQueue_id": "affiliateAccountAppQueueId",
+    "affiliateAccountAppQueueNo": "affiliateAccountAppQueueNo",
+    "wxUserId": "wxUserId",
+    "nailUserId": "nailUserId",
+    "workPhone": "workPhone",
+    "loginOrNot": "loginOrNot",
+    "loginRetryTimes": "loginRetryTimes",
+    "accountLockedTime": "accountLockedTime",
+    "createDate": "createDate",
+    "lastUpdateDate": "lastUpdateDate",
+}
 _OPTIONAL_SOURCE_COLUMNS = frozenset(
     {
         ("biz_participant", "iam_lessee_id"),
         ("sys_orgnization", "deleted"),
         ("sys_orgnization", "userId"),
     }
+    | {("sys_user", column) for column in _STAFF_OPTIONAL_COLUMN_ALIASES}
 )
 
 
@@ -157,6 +180,14 @@ def _organization_select(available_columns: set[tuple[str, str]]) -> str:
             "WHERE COALESCE(`deleted`, 0) = 0\n  AND LEFT(`ownership`, 4) = %s",
             "WHERE LEFT(`ownership`, 4) = %s",
         )
+    return statement
+
+
+def _staff_select(available_columns: set[tuple[str, str]]) -> str:
+    statement = STAFF_SELECT
+    for column, alias in _STAFF_OPTIONAL_COLUMN_ALIASES.items():
+        if ("sys_user", column) not in available_columns:
+            statement = statement.replace(f"`{column}` AS `{alias}`", f"NULL AS `{alias}`")
     return statement
 
 
@@ -306,6 +337,12 @@ class EtbcReader:
                 stage = "inspect_optional_columns"
                 cursor.execute(OPTIONAL_SOURCE_COLUMNS_SELECT)
                 available_columns = _available_optional_columns(cursor.fetchall())
+                missing_optional_columns = _OPTIONAL_SOURCE_COLUMNS - available_columns
+                if missing_optional_columns:
+                    LOGGER.warning(
+                        "ETBC optional columns unavailable; substituting compatibility defaults: columns=%s",
+                        ",".join(f"{table}.{column}" for table, column in sorted(missing_optional_columns)),
+                    )
 
                 stage = "read_tenant"
                 cursor.execute(_tenant_select(available_columns), (legacy_tenant_id,))
@@ -348,7 +385,7 @@ class EtbcReader:
                     raise LocalValidationError("TENANT_ROOT_OWNERSHIP_MISMATCH")
 
                 stage = "read_staff"
-                cursor.execute(STAFF_SELECT, (prefix,))
+                cursor.execute(_staff_select(available_columns), (prefix,))
                 staff_rows = cursor.fetchall()
                 staff: list[dict[str, Any]] = []
 

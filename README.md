@@ -50,9 +50,10 @@ secret、credential 或 loginPwd 的键都会被拒绝。当前唯一由进程�
 并且查询明确列出字段。工具不会查询 `loginPwd`、`loginPwdEncrypt` 或 `sys_user_orgnization`。
 
 部分旧版 ETBC schema 没有仅用于迁移审计的 `biz_participant.iam_lessee_id`、
-`sys_orgnization.userId`，也没有组织软删除列 `sys_orgnization.deleted`。工具会在同一个只读事务中
-通过 `INFORMATION_SCHEMA.COLUMNS` 检测这三个列：缺少审计列时传递 `null`；缺少 `deleted` 时将
-该租户范围内的组织全部按未删除处理。除此之外的必需源字段仍然 fail-closed，不做静默兼容。
+`sys_orgnization.userId`、组织软删除列 `sys_orgnization.deleted`，或部分 `sys_user` 可选资料列。
+工具会在同一个只读事务中通过 `INFORMATION_SCHEMA.COLUMNS` 检测这些列：缺少审计和员工资料列
+时传递 `null`；缺少 `deleted` 时将该租户范围内的组织全部按未删除处理。员工身份、组织归属、
+登录名、用户类型和状态等必需源字段仍然 fail-closed，不做静默兼容。
 数据库与运行节点的 UTC 时钟允许最多 5 秒偏差；超过该范围的未来 `snapshotAt` 仍会被拒绝。
 
 ## 构建
@@ -104,6 +105,11 @@ $env:ETBC_PASSWORD = '<由秘密管理系统注入>'
 
 失败日志会包含 `stage`、异常类型、MySQL 错误码和底层错误详情。例如缺少字段时可据此定位到
 `read_tenant`、`read_organizations` 或 `read_staff` 阶段；日志不会输出数据库密码。
+
+读取快照前，程序会检查 ETBC 表结构。旧版 `sys_user` 缺少 `wxUserId`、`nailUserId`、
+`workPhone` 等可选资料列时，会记录 `ETBC optional columns unavailable` 警告，并以 `NULL`
+填充对应字段后继续。员工 ID、租户归属、组织归属、登录名、姓名、用户类型和状态等核心字段仍然
+保持严格要求；缺少这些字段时迁移会停止，避免生成无法正确关联的 IAM 数据。
 
 下面的生产示例假定已由安全的运行平台注入 `ETBC_PASSWORD`，并设置这些非秘密运行变量：
 
