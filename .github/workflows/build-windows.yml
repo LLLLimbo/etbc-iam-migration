@@ -1,0 +1,105 @@
+name: Build Windows executable
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.11"
+          architecture: "x64"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.lock
+            requirements-build-windows.lock
+
+      - name: Install locked dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check --requirement requirements.lock --requirement requirements-build-windows.lock
+          python -m pip install --disable-pip-version-check --no-build-isolation --no-deps .
+
+      - name: Run unit tests
+        shell: pwsh
+        run: python -m pytest tests/unit -q
+
+      - name: Build single-file executable
+        shell: pwsh
+        run: python -m PyInstaller --clean --noconfirm etbc-iam-migration.spec
+
+      - name: Smoke test CLI
+        shell: pwsh
+        run: .\dist\etbc-iam-migrate.exe --help
+
+      - name: Smoke test bundled web assets
+        shell: pwsh
+        run: |
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "etbc-windows-smoke"
+          $configPath = Join-Path $smokeRoot "config.toml"
+          $statePath = Join-Path $smokeRoot "state"
+          New-Item -ItemType Directory -Path $smokeRoot -Force | Out-Null
+          Set-Content -Path $configPath -Value "[web]`ndefault_source_timezone = `"Asia/Shanghai`"" -Encoding utf8
+          $arguments = @(
+            "--config=$configPath",
+            "web",
+            "--state-dir=$statePath",
+            "--bind=127.0.0.1",
+            "--port=18080"
+          )
+          $process = Start-Process -FilePath ".\dist\etbc-iam-migrate.exe" -ArgumentList $arguments -PassThru -NoNewWindow
+          try {
+            $home = $null
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              if ($process.HasExited) {
+                throw "Bundled web console exited with code $($process.ExitCode)"
+              }
+              try {
+                $home = Invoke-WebRequest -Uri "http://127.0.0.1:18080/" -TimeoutSec 2
+                break
+              } catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+            if ($null -eq $home -or $home.StatusCode -ne 200) {
+              throw "Bundled web console did not become ready"
+            }
+            $asset = Invoke-WebRequest -Uri "http://127.0.0.1:18080/assets/app.css" -TimeoutSec 2
+            if ($asset.StatusCode -ne 200 -or $asset.Content -notmatch "font-family") {
+              throw "Bundled web asset is unavailable"
+            }
+          } finally {
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+              $process.WaitForExit()
+            }
+          }
+
+      - name: Generate checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -Algorithm SHA256 .\dist\etbc-iam-migrate.exe).Hash.ToLowerInvariant()
+          "$hash  etbc-iam-migrate.exe" | Set-Content -Path .\dist\etbc-iam-migrate.exe.sha256 -Encoding ascii
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: etbc-iam-migration-windows-x64
+          path: |
+            dist/etbc-iam-migrate.exe
+            dist/etbc-iam-migrate.exe.sha256
+          if-no-files-found: error
+          retention-days: 30

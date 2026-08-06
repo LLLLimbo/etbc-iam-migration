@@ -1,0 +1,188 @@
+services:
+  iam-db:
+    image: ${MYSQL_IMAGE:-docker.1ms.run/mysql:8.0}
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?runtime secret required}
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_DATABASE: iam_mgmt
+      MYSQL_INITDB_SKIP_TZINFO: "1"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_bin
+      - --default-authentication-plugin=mysql_native_password
+    volumes:
+      - iam-db-data:/var/lib/mysql
+      - ../iam-management-service/deploy/sqls/1.7.6/1.7.6-full.sql:/docker-entrypoint-initdb.d/00-iam-mgmt-schema.sql:ro
+      - ../iam-management-service/deploy/sqls/1.7.4/1.7.4-init-data.sql:/docker-entrypoint-initdb.d/01-iam-mgmt-init-data.sql:ro
+      - ../iam-auth-center-service/integration-test/auth/mysql/init/iam_auth_center-ddl.sql:/docker-entrypoint-initdb.d/02-iam-auth-center-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$${MYSQL_ROOT_PASSWORD} mysqladmin ping -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  etbc-source-db:
+    image: ${MYSQL_IMAGE:-docker.1ms.run/mysql:8.0}
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?runtime secret required}
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_INITDB_SKIP_TZINFO: "1"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_bin
+      - --default-authentication-plugin=mysql_native_password
+    volumes:
+      - etbc-source-data:/var/lib/mysql
+      - ./integration/etbc-init/00-schema.sql:/docker-entrypoint-initdb.d/00-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$${MYSQL_ROOT_PASSWORD} mysqladmin ping -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  etbc-readonly-init:
+    image: ${MYSQL_IMAGE:-docker.1ms.run/mysql:8.0}
+    depends_on:
+      etbc-source-db:
+        condition: service_healthy
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?runtime secret required}
+      ETBC_PASSWORD: ${ETBC_PASSWORD:?runtime secret required}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        umask 077
+        {
+          printf "CREATE USER IF NOT EXISTS 'migration_ro'@'%%' IDENTIFIED BY '%s';\n" "$${ETBC_PASSWORD}"
+          printf "GRANT SELECT ON etbc_source.* TO 'migration_ro'@'%%';\n"
+          printf "FLUSH PRIVILEGES;\n"
+        } | MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}" mysql -h etbc-source-db -u root
+        touch /tmp/ready
+        exec tail -f /dev/null
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  redis:
+    image: ${REDIS_IMAGE:-docker.1ms.run/redis:5.0.14-alpine}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+
+  iam-management:
+    image: iam-management-service:python-migration-it
+    build:
+      context: ../iam-management-service
+      dockerfile: Dockerfile
+    depends_on:
+      iam-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: 17020
+      SPRING_DATASOURCE_URL: jdbc:mysql://iam-db:3306/iam_mgmt?serverTimezone=Asia/Shanghai&useSSL=false&useUnicode=true&characterEncoding=utf8&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:?runtime secret required}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ""
+      SPRING_DATA_REDIS_DATABASE: 1
+      IAM_INTERCEPTOR_ENABLED: "false"
+      IAM_EVENT_PUBLISHER_KAFKA_ENABLED: "false"
+      IAM_EVENT_PUBLISHER_ROCKETMQ_ENABLED: "false"
+      ROCKETMQ_NAMESERVER: ""
+
+  iam-auth-center:
+    image: iam-auth-center-service:python-migration-it
+    build:
+      context: ../iam-auth-center-service
+      dockerfile: Dockerfile
+    depends_on:
+      iam-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      iam-management:
+        condition: service_started
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      SERVER_PORT: 17021
+      SPRING_DATASOURCE_URL: jdbc:mysql://iam-db:3306/iam_ac?serverTimezone=Asia/Shanghai&useSSL=false&useUnicode=true&characterEncoding=utf8&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:?runtime secret required}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ""
+      SPRING_DATA_REDIS_DATABASE: 2
+      IAM_MANAGEMENT_SERVER_URL: http://iam-management:17020
+      IAM_COOKIE_DOMAIN: python-migration.test
+      IAM_AUTH_CENTER_CACHE_AUTH_CACHE_PROVIDER: memory
+      IAM_AUTH_CENTER_CLIENT_CONTEXT_LOG_ENABLED: "false"
+      IAM_EVENT_LISTENER_KAFKA_ENABLED: "false"
+      IAM_EVENT_LISTENER_ROCKETMQ_ENABLED: "false"
+      IAM_EVENT_PUBLISHER_HTTP_ENABLED: "false"
+      IAM_EVENT_PUBLISHER_KAFKA_ENABLED: "false"
+      IAM_EVENT_PUBLISHER_ROCKETMQ_ENABLED: "false"
+      ROCKETMQ_NAMESERVER: ""
+
+  iam-proxy:
+    image: etbc-iam-migration:integration
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      iam-management:
+        condition: service_started
+    entrypoint: ["python", "/app/integration/capture_proxy.py"]
+    environment:
+      IAM_PROXY_UPSTREAM: http://iam-management:17020
+      IAM_PROXY_OBSERVATIONS: /observations/requests.jsonl
+    volumes:
+      - .:/app:ro
+      - observations:/observations
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://127.0.0.1:18080/health', timeout=2).raise_for_status()"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+
+  migration-test:
+    image: etbc-iam-migration:integration
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      etbc-readonly-init:
+        condition: service_healthy
+      iam-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      iam-management:
+        condition: service_started
+      iam-auth-center:
+        condition: service_started
+      iam-proxy:
+        condition: service_healthy
+    entrypoint: ["python", "-m", "pytest"]
+    command: ["tests/integration", "-q", "-m", "integration", "-p", "no:cacheprovider"]
+    working_dir: /app
+    environment:
+      ETBC_PASSWORD: ${ETBC_PASSWORD:?runtime secret required}
+      IAM_DB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?runtime secret required}
+    volumes:
+      - .:/app:ro
+      - migration-state:/state
+      - observations:/observations:ro
+
+volumes:
+  iam-db-data:
+  etbc-source-data:
+  migration-state:
+  observations:

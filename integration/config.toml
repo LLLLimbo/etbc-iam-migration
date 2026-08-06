@@ -1,0 +1,19 @@
+[etbc]
+host = "etbc-source-db"
+port = 3306
+user = "migration_ro"
+schema = "etbc_source"
+connect_timeout_seconds = 10
+read_timeout_seconds = 60
+
+[iam]
+base_url = "http://iam-proxy:18080"
+allow_insecure_http = true
+connect_timeout_seconds = 5
+read_timeout_seconds = 90
+
+[migration]
+state_dir = "/state"
+staff_chunk_size = 1
+max_attempts = 3
+retry_base_seconds = 0.05

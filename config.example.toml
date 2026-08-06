@@ -1,0 +1,23 @@
+[etbc]
+host = "10.200.6.108"
+port = 3306
+user = "jkdb"
+schema = "etbc_trial_hw"
+connect_timeout_seconds = 10
+read_timeout_seconds = 60
+# ssl_ca = "/run/certs/etbc-ca.pem"
+
+[iam]
+base_url = "http://10.200.6.200:8387"
+allow_insecure_http = true
+connect_timeout_seconds = 5
+read_timeout_seconds = 60
+
+[migration]
+state_dir = "/var/lib/etbc-iam-migration"
+staff_chunk_size = 150
+max_attempts = 3
+retry_base_seconds = 1.0
+
+[web]
+default_source_timezone = "Asia/Shanghai"
