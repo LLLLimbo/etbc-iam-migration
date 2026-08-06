@@ -62,19 +62,19 @@ jobs:
           )
           $process = Start-Process -FilePath ".\dist\etbc-iam-migrate.exe" -ArgumentList $arguments -PassThru -NoNewWindow
           try {
-            $home = $null
+            $homeResponse = $null
             for ($attempt = 0; $attempt -lt 30; $attempt++) {
               if ($process.HasExited) {
                 throw "Bundled web console exited with code $($process.ExitCode)"
               }
               try {
-                $home = Invoke-WebRequest -Uri "http://127.0.0.1:18080/" -TimeoutSec 2
+                $homeResponse = Invoke-WebRequest -Uri "http://127.0.0.1:18080/" -TimeoutSec 2
                 break
               } catch {
                 Start-Sleep -Seconds 1
               }
             }
-            if ($null -eq $home -or $home.StatusCode -ne 200) {
+            if ($null -eq $homeResponse -or $homeResponse.StatusCode -ne 200) {
               throw "Bundled web console did not become ready"
             }
             $asset = Invoke-WebRequest -Uri "http://127.0.0.1:18080/assets/app.css" -TimeoutSec 2

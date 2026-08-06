@@ -17,6 +17,8 @@ def test_windows_build_workflow_publishes_single_file_executable() -> None:
     assert "dist/etbc-iam-migrate.exe" in workflow
     assert "actions/upload-artifact@v7" in workflow
     assert "if-no-files-found: error" in workflow
+    assert "$homeResponse = $null" in workflow
+    assert "$home =" not in workflow
     assert 'name="etbc-iam-migrate"' in spec
     assert 'collect_data_files("etbc_migration")' in spec
     assert 'collect_data_files("tzdata")' in spec
